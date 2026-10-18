@@ -1,13 +1,13 @@
-FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
+FROM python:3.10-slim
 
 WORKDIR /app
 
-COPY requirements.txt /app/
+# Abhängigkeiten kopieren und installieren
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install chromium
 
-COPY . /app/
+# Anwendungscode kopieren
+COPY . .
 
-ENV PYTHONPATH=/app
-
-CMD ["python3", "-m", "uvicorn", "test_scraper:app", "--host", "0.0.0.0", "--port", "10000"]
+# FastAPI via Uvicorn starten
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
