@@ -20,7 +20,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
     api_key = os.getenv("GROQ_API_KEY")
     tarife_liste = []
 
-    # 1. Octopus Energy Live-Seite für die spezifische PLZ abrufen
+    # 1. Obtener la página web de Octopus Energy para la PLZ indicada
     url = f"https://octopusenergy.de/signup/1-start?postcode={plz}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -35,7 +35,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
     except Exception as e:
         print(f"Fetch Error: {e}")
 
-    # 2. KI beauftragen, ALLE verfügbaren Tarife aus dem HTML/Text zu filtern
+    # 2. Extraer todas las tarifas con el modelo activo de Groq
     if api_key and len(raw_text) > 1000:
         try:
             client = Groq(api_key=api_key)
@@ -64,8 +64,9 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
             {raw_text[:7000]}
             """
 
+            # Cambio de modelo a llama-3.3-70b-versatile
             completion = client.chat.completions.create(
-                model="llama-3.1-8b-instant",
+                model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 response_format={"type": "json_object"}
@@ -88,8 +89,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
         except Exception as e:
             print(f"KI Error: {e}")
 
-    # 3. Falls die Webseite dynamisch geblockt wird: Vollständiges Octopus-Tarifportfolio berechnen
-    # Damit erhält der Nutzer immer ALLE aktuellen Octopus-Tarifoptionen für seine PLZ!
+    # 3. Respaldo dinámico si la web bloquea el contenido o no devuelve texto HTML directo
     if not tarife_liste:
         tarife_liste = [
             {
@@ -109,7 +109,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
             }
         ]
 
-    # 4. Berechnung von Monatsabtrag & Ersparnis für die Liste im Frontend
+    # 4. Cálculo final y formateo para el frontend
     referenz_preis_jahr = (kwh * 0.38) + (12.50 * 12)
     final_tarife = []
 
