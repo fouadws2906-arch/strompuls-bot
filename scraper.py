@@ -5,10 +5,11 @@ Ablauf wie ein Besucher auf octopusenergy.de:
   PLZ eingeben -> "Wenig" klicken -> kWh/Jahr eintragen -> "Tarif finden"
   -> Tarifkarten (relax12, relax24, ...) auslesen -> tarife.json
 
-Aufruf:  python scraper.py --plz-file plz.txt
+Aufruf:  python scraper.py --plz-file plz.csv --max 300   (alle PLZ, 300 pro Lauf, rollierend)
+         python scraper.py --plz-file plz.txt
          python scraper.py --plz 44139 --kwh 2500
 """
-import argparse, json, os, random, re, sys, time
+import argparse, csv, hashlib, json, os, random, re, sys, time
 from datetime import date
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from playwright.sync_api import sync_playwright
 
 START_URL = "https://octopusenergy.de/"
 OUT = Path("tarife.json")
+STATE = Path("state.json")
 DEBUG = Path("debug")
 LINK = os.environ.get("AFFILIATE_LINK") or START_URL
 
@@ -136,36 +138,88 @@ def scrape_plz(browser, plz, kwh):
     return tarife
 
 
+def read_plz(path):
+    """PLZ aus .txt (eine pro Zeile) oder .csv (Spalte 'plz') lesen."""
+    p = Path(path)
+    if p.suffix.lower() == ".csv":
+        with p.open(encoding="utf-8-sig", newline="") as f:
+            sample = f.read(2048)
+            f.seek(0)
+            delim = ";" if sample.count(";") > sample.count(",") else ","
+            rows = csv.DictReader(f, delimiter=delim)
+            cols = {(k or "").lower().strip(): k for k in (rows.fieldnames or [])}
+            key = cols.get("plz") or cols.get("postleitzahl")
+            vals = [(r.get(key) or "").strip().zfill(5) for r in rows] if key else []
+    else:
+        vals = [l.strip() for l in p.read_text().splitlines()]
+    return sorted({v for v in vals if re.fullmatch(r"\d{5}", v)})
+
+
+def gruppe_id(tarife):
+    return hashlib.md5(json.dumps(tarife, sort_keys=True).encode()).hexdigest()[:8]
+
+
+def save(data, state):
+    used = set(data["plz"].values())
+    data["gruppen"] = {k: v for k, v in data["gruppen"].items() if k in used}
+    data["stand"] = date.today().strftime("%d.%m.%Y")
+    OUT.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+    STATE.write_text(json.dumps(state))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--plz", default="")
     ap.add_argument("--plz-file", default="")
     ap.add_argument("--kwh", type=int, default=2500)
+    ap.add_argument("--max", type=int, default=0, help="PLZ pro Lauf (0 = alle); rollierend")
     a = ap.parse_args()
 
     plzs = [p.strip() for p in a.plz.split(",") if p.strip()]
     if a.plz_file:
-        plzs += [l.strip() for l in Path(a.plz_file).read_text().splitlines() if l.strip().isdigit()]
+        plzs += read_plz(a.plz_file)
     plzs = sorted(set(plzs))
     if not plzs:
         sys.exit("Keine PLZ angegeben.")
 
-    data = json.loads(OUT.read_text()) if OUT.exists() else {"tarife": {}}
-    ok = 0
+    data = json.loads(OUT.read_text()) if OUT.exists() else {}
+    data.setdefault("gruppen", {})
+    data.setdefault("plz", {})
+    state = json.loads(STATE.read_text()) if STATE.exists() else {"offset": 0}
+
+    start = state.get("offset", 0) % len(plzs)
+    if a.max and a.max < len(plzs):
+        batch = (plzs[start:] + plzs[:start])[:a.max]
+        state["offset"] = (start + a.max) % len(plzs)
+    else:
+        batch, state["offset"] = plzs, 0
+    print(f"{len(plzs)} PLZ insgesamt, dieser Lauf: {len(batch)} (ab Position {start})")
+
+    ok = fails = streak = 0
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        for plz in plzs:
+        for i, plz in enumerate(batch, 1):
             tarife = scrape_plz(browser, plz, a.kwh)
-            print(f"[{plz}] {len(tarife)} Tarife: " + ", ".join(f"{t['tarif']} {t['ap']} ct / {t['gp']} €" for t in tarife))
-            if tarife:                       # bei Fehlschlag alte Daten behalten
-                data["tarife"][plz] = tarife
+            print(f"[{plz}] {len(tarife)} Tarife: " + ", ".join(f"{t['tarif']} {t['ap']} ct / {t['gp']} EUR" for t in tarife))
+            if tarife:                      # bei Fehlschlag alte Daten behalten
+                gid = gruppe_id(tarife)
+                data["gruppen"][gid] = tarife
+                data["plz"][plz] = gid
                 ok += 1
-            time.sleep(random.uniform(3, 6))
+                streak = 0
+            else:
+                fails += 1
+                streak += 1
+                if streak >= 8 and ok == 0:  # Seite hat sich wohl geaendert: nicht weiter hammern
+                    print("8 Fehlschlaege in Folge, Abbruch.", file=sys.stderr)
+                    break
+            if i % 25 == 0:
+                save(data, state)
+            time.sleep(random.uniform(2, 4))
         browser.close()
 
-    data["stand"] = date.today().strftime("%d.%m.%Y")
-    OUT.write_text(json.dumps(data, ensure_ascii=False, indent=1))
-    print(f"{ok}/{len(plzs)} PLZ aktualisiert")
+    save(data, state)
+    print(f"{ok} PLZ aktualisiert, {fails} ohne Ergebnis, {len(data['plz'])} PLZ insgesamt in tarife.json")
     sys.exit(0 if ok else 1)
 
 
