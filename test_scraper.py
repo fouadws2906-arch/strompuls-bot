@@ -23,7 +23,7 @@ def clean_float(val_str: str) -> float:
     return 0.0
 
 @app.get("/scrape")
-async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
+async def scrape_tarife(plz: str = "50667", kwh: int = 1500):
     tarife_liste = []
     referenz_preis_jahr = (kwh * 0.38) + (12.50 * 12)
 
@@ -38,7 +38,7 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
         page = await context.new_page()
 
         try:
-            # 1. Energiemarie Aufrufen
+            # 1. Energiemarie (Selectra) aufrufen
             await page.goto("https://energiemarie.de/stromanbieter/octopus-energy", wait_until="networkidle", timeout=30000)
 
             # 2. Cookies akzeptieren
@@ -49,32 +49,32 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             except Exception:
                 pass
 
-            # 3. PLZ ausfüllen
+            # 3. PLZ eingeben
             plz_input = page.locator("input[placeholder*='PLZ'], input[name*='zip'], input[id*='plz']").first
             if await plz_input.is_visible(timeout=3000):
                 await plz_input.click()
                 await plz_input.fill("")
-                await plz_input.type(str(plz), delay=60)
+                await plz_input.type(str(plz), delay=50)
 
-            # 4. kWh ausfüllen
+            # 4. kWh eingeben
             kwh_input = page.locator("input[placeholder*='kWh'], input[name*='consumption'], input[id*='kwh']").first
             if await kwh_input.is_visible(timeout=3000):
                 await kwh_input.click()
                 await kwh_input.fill("")
-                await kwh_input.type(str(kwh), delay=60)
+                await kwh_input.type(str(kwh), delay=50)
 
-            # 5. Berechnung starten
+            # 5. Formular absenden
             submit_btn = page.locator("button:has-text('Tarife anzeigen'), button:has-text('Berechnen')").first
             if await submit_btn.is_visible(timeout=3000):
                 await submit_btn.click()
 
-            # Dynamic Wait: Warten, bis mindestens ein Arbeitspreis-Text auf der Seite auftaucht
+            # Warten bis die Ergebnisse geladen sind
             try:
                 await page.wait_for_selector("text=Arbeitspreis", timeout=10000)
             except Exception:
                 await page.wait_for_timeout(4000)
 
-            # 6. Tarifblöcke auslesen
+            # 6. Tarifkarten scannen
             all_divs = await page.locator("div").all()
 
             for div in all_divs:
@@ -83,7 +83,7 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
 
                     if "Arbeitspreis" in card_text and "Grundpreis" in card_text and len(card_text) < 900:
                         
-                        # Tarifname identifizieren
+                        # Tarif-Name auslesen
                         title = "Octopus Energy Tarif"
                         lines = [l.strip() for l in card_text.split('\n') if l.strip()]
                         for line in lines:
@@ -91,27 +91,29 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
                                 title = line
                                 break
 
-                        # Duplikate filtern
+                        # Duplikate vermeiden
                         if any(t["tariff"] == title for t in tarife_liste):
                             continue
 
-                        # Arbeitspreis (ct/kWh)
+                        # Arbeitspreis (ct/kWh) & Grundpreis (€/Monat) für Details
                         ap_match = re.search(r"Arbeitspreis\s*(\d+[,.]\d+)", card_text)
                         arbeitspreis = clean_float(ap_match.group(1)) if ap_match else 0.0
 
-                        # Grundpreis (€/Monat)
                         gp_match = re.search(r"Grundpreis\s*(\d+[,.]\d+)", card_text)
                         grundpreis = clean_float(gp_match.group(1)) if gp_match else 0.0
 
-                        # Direkter Jahrespreis oder Berechnung
-                        jahr_matches = re.findall(r"(\d{3,4}(?:[,.]\d+)?)\s*€\s*/?\s*Jahr", card_text)
+                        # HAUPT-LOGIK: Direkt die große Zahl vor €/Jahr greifen (z. B. "684 €/Jahr")
+                        # Wir suchen nach Zahlen > 200, um Bonuszahlungen auszuschließen
+                        jahr_matches = re.findall(r"(\d{3,4})\s*€\s*/?\s*Jahr", card_text)
                         valid_prices = [clean_float(m) for m in jahr_matches if clean_float(m) > 200]
-                        
+
                         if valid_prices:
-                            preis_jahr = valid_prices[0]
+                            preis_jahr = valid_prices[0]  # Z. B. 684.00 €
                         else:
+                            # Fallback falls nicht direkt gefunden
                             preis_jahr = round((kwh * (arbeitspreis / 100)) + (grundpreis * 12), 2)
 
+                        # Monatlicher Preis = Exakt Jahrespreis / 12 (z. B. 684 / 12 = 57.00 €)
                         preis_monat = round(preis_jahr / 12, 2)
                         ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
 
