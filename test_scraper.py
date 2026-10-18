@@ -1,10 +1,12 @@
 import asyncio
+import re
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 
 app = FastAPI()
 
+# CORS middleware WordPress (strompuls.de) nisqapaq
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -27,11 +29,13 @@ async def scrape_tarife(plz: str = "40210", kwh: int = 2500):
         )
         page = await context.new_page()
 
+        # ----------------------------------------------------
+        # 1. OCTOPUS ENERGY SCRAPING
+        # ----------------------------------------------------
         try:
-            # 1. Navegar a Octopus Energy
             await page.goto("https://octopusenergy.de/", wait_until="networkidle", timeout=30000)
 
-            # Aceptar cookies si aparecen
+            # Cookie-banner aceptay
             try:
                 cookie_btn = page.locator("button:has-text('Alle akzeptieren'), button:has-text('Akzeptieren'), #onetrust-accept-btn-handler")
                 if await cookie_btn.is_visible(timeout=3000):
@@ -39,55 +43,55 @@ async def scrape_tarife(plz: str = "40210", kwh: int = 2500):
             except Exception:
                 pass
 
-            # 2. Rellenar PLZ
+            # PLZ hunt'achiy[cite: 4]
             plz_input = page.locator("input[placeholder*='PLZ'], input[name*='postcode'], input[id*='postcode']").first
             await plz_input.fill(str(plz))
 
-            # 3. Seleccionar "Wendig"
+            # "Wenig" akllay[cite: 4]
             wenig_btn = page.locator("button:has-text('Wenig'), div:has-text('Wenig')").first
             if await wenig_btn.is_visible(timeout=2000):
                 await wenig_btn.click()
 
-            # 4. Rellenar consumo en kWh
+            # kWh hunt'achiy[cite: 4]
             kwh_input = page.locator("input[placeholder*='kWh'], input[name*='kwh'], input[id*='kwh']").first
             if await kwh_input.is_visible(timeout=2000):
                 await kwh_input.fill("")
                 await kwh_input.fill(str(kwh))
 
-            # 5. Clic en "Tarif finden"
+            # "Tarif finden" ñit'iy[cite: 4]
             tarif_btn = page.locator("button:has-text('Tarif finden')").first
             await tarif_btn.click()
 
-            # Espacio de espera para cargar los resultados del cálculo
+            # Suyay resultado paginata
             await page.wait_for_url("**/signup/**", timeout=20000)
             await page.wait_for_selector("[class*='tariff'], [class*='card'], form", timeout=10000)
 
-            # Capturar la URL final con el contexto guardado
-            final_url = page.url
+            octopus_final_url = page.url
 
-            # 6. Extraer todas las tarjetas/módulos de tarifas encontradas en la página
+            # Llapa tarifakunata Octopus nisqamanta hoqariy
             cards = await page.locator("div[class*='tariff-card'], div[class*='TariffCard'], article").all()
 
             if cards:
                 for card in cards:
                     try:
-                        # Extraer nombre del plan
                         title_el = card.locator("h2, h3, h4, [class*='title']").first
                         title = await title_el.inner_text() if await title_el.is_visible() else "Octopus Tarif"
 
-                        # Extraer precio por kWh
-                        arbeitspreis = 27.5 # Valor base por defecto
+                        arbeitspreis = 27.5
                         ap_el = card.locator("text=/\\d+[,.]\\d+\\s*ct/i").first
                         if await ap_el.is_visible():
                             ap_text = await ap_el.inner_text()
-                            arbeitspreis = float(ap_text.replace("ct/kWh", "").replace(",", ".").strip())
+                            match = re.search(r"(\d+[,.]?\d*)", ap_text)
+                            if match:
+                                arbeitspreis = float(match.group(1).replace(",", "."))
 
-                        # Extraer cuota fija mensual
                         grundpreis = 10.90
                         gp_el = card.locator("text=/\\d+[,.]\\d+\\s*€/i").first
                         if await gp_el.is_visible():
                             gp_text = await gp_el.inner_text()
-                            grundpreis = float(gp_text.replace("€/Monat", "").replace("€", "").replace(",", ".").strip())
+                            match = re.search(r"(\d+[,.]?\d*)", gp_text)
+                            if match:
+                                grundpreis = float(match.group(1).replace(",", "."))
 
                         tarife_liste.append({
                             "provider": "Octopus Energy",
@@ -95,18 +99,18 @@ async def scrape_tarife(plz: str = "40210", kwh: int = 2500):
                             "arbeitspreis_ct": arbeitspreis,
                             "grundpreis_euro": grundpreis,
                             "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
-                            "link": final_url
+                            "link": octopus_final_url
                         })
                     except Exception as inner_e:
-                        print(f"Error procesando una tarjeta: {inner_e}")
+                        print(f"Octopus tarjeta pantay: {inner_e}")
 
         except Exception as e:
-            print(f"Octopus Scrape Error: {e}")
+            print(f"Octopus Scrape pantay: {e}")
 
         finally:
             await browser.close()
 
-    # Si por alguna razón la extracción dinámica no devolvió elementos, usamos las tarifas por defecto
+    # Mana tarikuqtinqa, tarifakuna fallback hinalla
     if not tarife_liste:
         tarife_liste = [
             {
@@ -127,14 +131,18 @@ async def scrape_tarife(plz: str = "40210", kwh: int = 2500):
             }
         ]
 
-    # Añadir también los proveedores adicionales (ej. Rabot Charge)
+    # ----------------------------------------------------
+    # 2. RABOT CHARGE TARIFA (Keine Geräte vorhanden)
+    # ----------------------------------------------------
+    rabot_link = f"https://funnel.rabot.energy/tariff-details?plz={plz}&consumption={kwh}&kwh={kwh}&hasDevices=false&smartMeter=false"
+
     tarife_liste.append({
         "provider": "Rabot Charge",
         "tariff": "Rabot Dynamic Pur",
         "arbeitspreis_ct": 25.8,
         "grundpreis_euro": 9.90,
         "logo": "https://www.rabot.energy/wp-content/uploads/2025/07/Rabot-Energy-RGB-150dpi-Logo-schwarz-gruen-positiv-randlos.webp",
-        "link": f"https://funnel.rabot.energy/tariff-details?plz={plz}&consumption={kwh}&kwh={kwh}"
+        "link": rabot_link
     })
 
     return {
