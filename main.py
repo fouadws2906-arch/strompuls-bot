@@ -15,12 +15,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Liste von Groq-Modellen, die nacheinander probiert werden
+# Offiziell unterstützte Production Models von Groq (gemäß Dokumentation)
 GROQ_MODELS = [
     "llama-3.1-8b-instant",
-    "llama3-70b-8192",
-    "mixtral-8x7b-32768",
-    "llama3-8b-8192"
+    "llama-3.3-70b-versatile",
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b"
 ]
 
 @app.get("/scrape")
@@ -28,7 +28,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
     api_key = os.getenv("GROQ_API_KEY")
     tarife_liste = []
 
-    # 1. Octopus Energy Seite für die spezifische PLZ abrufen
+    # 1. Octopus Energy Live-Seite abrufen
     url = f"https://octopusenergy.de/signup/1-start?postcode={plz}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -43,7 +43,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
     except Exception as e:
         print(f"Fetch Error: {e}")
 
-    # 2. KI mit Modell-Fallback aufrufen
+    # 2. KI-Anfrage mit den verifizierten Modell-IDs durchführen
     if api_key and len(raw_text) > 500:
         client = Groq(api_key=api_key)
         prompt = f"""
@@ -94,15 +94,15 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
                             "preis_jahr_euro": preis_jahr
                         })
                 
-                # Wenn wir erfolgreich Daten extrahiert haben, brechen wir die Schleife ab
                 if tarife_liste:
+                    print(f"Erfolgreich ausgewertet mit Modell: {model_name}")
                     break
 
             except Exception as e:
-                print(f"Modell {model_name} fehlgeschlagen, versuche nächstes... Fehler: {e}")
+                print(f"Modell {model_name} fehlgeschlagen: {e}")
                 continue
 
-    # 3. Fallback: Dynamische Generierung von Octopus-Tarifoptionen basierend auf PLZ & kWh
+    # 3. Dynamische Tarif-Berechnung für den Standort (Fallback), falls kein statischer Text lesbar war
     if not tarife_liste:
         tarife_liste = [
             {
@@ -122,7 +122,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
             }
         ]
 
-    # 4. Monatsabtrag & Ersparnis für die Liste im Frontend berechnen
+    # 4. Monatsabtrag & Ersparnis berechnen und als Liste für das Frontend zurückgeben
     referenz_preis_jahr = (kwh * 0.38) + (12.50 * 12)
     final_tarife = []
 
