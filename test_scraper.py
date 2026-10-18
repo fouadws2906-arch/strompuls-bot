@@ -15,11 +15,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inicializa el cliente con la API Key gratuita de Groq
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-
 @app.get("/scrape")
 async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
+    # Validar la API Key antes de ejecutar
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return {
+            "status": "error",
+            "message": "GROQ_API_KEY no está configurada en las variables de entorno de Render."
+        }
+
+    client = Groq(api_key=api_key)
     tarife_liste = []
     
     async with async_playwright() as p:
@@ -33,10 +39,9 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
         page = await context.new_page()
 
         try:
-            # 1. Cargar la página
             await page.goto("https://energiemarie.de/stromanbieter/octopus-energy", wait_until="domcontentloaded", timeout=30000)
 
-            # 2. Aceptar Cookies
+            # Cookie Banner
             try:
                 cookie_btn = page.locator("button:has-text('Alle akzeptieren'), #didomi-notice-agree-button, button:has-text('Akzeptieren')").first
                 if await cookie_btn.is_visible(timeout=2500):
@@ -44,35 +49,31 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             except Exception:
                 pass
 
-            # 3. Llenar formulario
+            # PLZ
             plz_input = page.locator("input[placeholder*='PLZ'], input[name*='zip'], input[id*='plz']").first
             if await plz_input.is_visible(timeout=3000):
                 await plz_input.fill("")
                 await plz_input.type(str(plz), delay=40)
 
+            # kWh
             kwh_input = page.locator("input[placeholder*='kWh'], input[name*='consumption'], input[id*='kwh']").first
             if await kwh_input.is_visible(timeout=3000):
                 await kwh_input.fill("")
                 await kwh_input.type(str(kwh), delay=40)
 
+            # Submit
             submit_btn = page.locator("button:has-text('Tarife anzeigen'), button:has-text('Berechnen')").first
             if await submit_btn.is_visible(timeout=3000):
                 await submit_btn.click()
 
             await page.wait_for_timeout(4000)
 
-            # 4. Extraer el texto completo
+            # Text parsing
             raw_text = await page.evaluate("() => document.body.innerText")
 
-            # 5. Prompt para el modelo gratuito Llama 3
             prompt = f"""
-            Extract all Octopus Energy electricity tariffs from the following text for ZIP code {plz} and {kwh} kWh/year.
-
-            Rules:
-            1. Find the total annual price in euros (gross, e.g. 676).
-            2. Extract working price (arbeitspreis_ct) and base price (grundpreis_euro).
-            
-            Return ONLY a valid JSON object with this exact structure:
+            Extract all Octopus Energy electricity tariffs from the text for ZIP {plz} and {kwh} kWh/year.
+            Return ONLY a valid JSON object:
             {{
               "tarife": [
                 {{
@@ -119,7 +120,7 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
                     })
 
         except Exception as e:
-            print(f"Error scraping/IA: {e}")
+            print(f"Error: {e}")
 
         finally:
             await browser.close()
