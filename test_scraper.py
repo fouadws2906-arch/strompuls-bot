@@ -15,7 +15,6 @@ app.add_middleware(
 )
 
 def clean_float(val_str: str) -> float:
-    """ Wandelt Zahlenstrings wie '32,72 ct/kWh' oder '20,24 €/Monat' sauber in floats um """
     if not val_str:
         return 0.0
     match = re.search(r"(\d+[,.]?\d*)", val_str)
@@ -40,12 +39,12 @@ async def scrape_tarife(plz: str = "50667", kwh: int = 1500):
 
         try:
             # 1. Zielseite aufrufen
-            await page.goto("https://energiemarie.de/stromanbieter/octopus-energy", wait_until="domcontentloaded", timeout=25000)
+            await page.goto("https://energiemarie.de/stromanbieter/octopus-energy", wait_until="networkidle", timeout=30000)
 
             # 2. Cookie Banner akzeptieren
             try:
                 cookie_btn = page.locator("button:has-text('Alle akzeptieren'), #didomi-notice-agree-button, button:has-text('Akzeptieren')").first
-                if await cookie_btn.is_visible(timeout=2500):
+                if await cookie_btn.is_visible(timeout=3000):
                     await cookie_btn.click()
             except Exception:
                 pass
@@ -53,81 +52,88 @@ async def scrape_tarife(plz: str = "50667", kwh: int = 1500):
             # 3. PLZ-Eingabefeld ausfüllen
             plz_input = page.locator("input[placeholder*='PLZ'], input[name*='zip'], input[id*='plz']").first
             if await plz_input.is_visible(timeout=3000):
+                await plz_input.click()
                 await plz_input.fill("")
-                await plz_input.fill(str(plz))
-                await page.wait_for_timeout(500)
+                await plz_input.type(str(plz), delay=50)
 
             # 4. Jahresverbrauch (kWh) ausfüllen
             kwh_input = page.locator("input[placeholder*='kWh'], input[name*='consumption'], input[id*='kwh']").first
             if await kwh_input.is_visible(timeout=3000):
+                await kwh_input.click()
                 await kwh_input.fill("")
-                await kwh_input.fill(str(kwh))
-                await page.wait_for_timeout(500)
+                await kwh_input.type(str(kwh), delay=50)
 
-            # 5. Button "Tarife anzeigen" / "Berechnen" klicken
+            # 5. Button "Tarife anzeigen" klicken
             submit_btn = page.locator("button:has-text('Tarife anzeigen'), button:has-text('Berechnen')").first
-            if await submit_btn.is_visible(timeout=2000):
+            if await submit_btn.is_visible(timeout=3000):
                 await submit_btn.click()
 
-            # Warten bis die Karten aktualisiert sind
-            await page.wait_for_timeout(3500)
+            # Dynamic Wait: Warten, bis mindestens ein Element mit Preis im Text sichtbar ist
+            try:
+                await page.wait_for_selector("text=Arbeitspreis", timeout=8000)
+            except Exception:
+                await page.wait_for_timeout(4000)
 
-            # 6. Alle Tarifkarten erfassen
-            cards = await page.locator("div[class*='card'], div[class*='tariff']").all()
+            # 6. Tarifblöcke breit gefächert erfassen
+            # Wir suchen nach allen Containers, die sowohl Arbeitspreis als auch Grundpreis enthalten
+            all_divs = await page.locator("div").all()
 
-            for card in cards:
+            for div in all_divs:
                 try:
-                    card_text = await card.inner_text()
+                    card_text = await div.inner_text()
                     
-                    # Nur relevante Karten mit Preisen auswerten
-                    if "Arbeitspreis" not in card_text or "Grundpreis" not in card_text:
-                        continue
+                    # Filtern auf die tatsächliche Tarifkarte (vermeidet doppeltes Auslesen von übergeordneten Containern)
+                    if "Arbeitspreis" in card_text and "Grundpreis" in card_text and len(card_text) < 800:
+                        
+                        # Tarifname ermitteln
+                        title = "Octopus Energy Tarif"
+                        lines = [l.strip() for l in card_text.split('\n') if l.strip()]
+                        for line in lines:
+                            if any(k in line.lower() for k in ["secure", "optimus", "select", "basic", "relax", "flux"]):
+                                title = line
+                                break
+                        
+                        # Prüfen, ob die Tarifkarte bereits hinzugefügt wurde
+                        if any(t["tariff"] == title for t in tarife_liste):
+                            continue
 
-                    # Tarifname
-                    title = "Octopus Energy Tarif"
-                    lines = [l.strip() for l in card_text.split('\n') if l.strip()]
-                    for line in lines:
-                        if "Strom" in line or "Secure" in line or "Octopus" in line or "Optimus" in line or "Select" in line:
-                            title = line
-                            break
+                        # Arbeitspreis (ct/kWh)
+                        ap_match = re.search(r"Arbeitspreis\s*(\d+[,.]\d+)", card_text)
+                        arbeitspreis = clean_float(ap_match.group(1)) if ap_match else 0.0
 
-                    # Arbeitspreis (ct/kWh)
-                    ap_match = re.search(r"Arbeitspreis\s*(\d+[,.]\d+)", card_text)
-                    arbeitspreis = clean_float(ap_match.group(1)) if ap_match else 0.0
+                        # Grundpreis (€/Monat)
+                        gp_match = re.search(r"Grundpreis\s*(\d+[,.]\d+)", card_text)
+                        grundpreis = clean_float(gp_match.group(1)) if gp_match else 0.0
 
-                    # Grundpreis (€/Monat)
-                    gp_match = re.search(r"Grundpreis\s*(\d+[,.]\d+)", card_text)
-                    grundpreis = clean_float(gp_match.group(1)) if gp_match else 0.0
+                        # Gesamtpreis pro Jahr (€/Jahr)
+                        jahr_match = re.search(r"(\d+[\d.]*)\s*€\s*/\s*Jahr", card_text)
+                        if jahr_match:
+                            preis_jahr = clean_float(jahr_match.group(1))
+                        else:
+                            preis_jahr = round((kwh * (arbeitspreis / 100)) + (grundpreis * 12), 2)
 
-                    # Gesamtpreis pro Jahr (€/Jahr)
-                    jahr_match = re.search(r"(\d+[\d.]*)\s*€\s*/\s*Jahr", card_text)
-                    if jahr_match:
-                        preis_jahr = clean_float(jahr_match.group(1))
-                    else:
-                        preis_jahr = round((kwh * (arbeitspreis / 100)) + (grundpreis * 12), 2)
+                        # Monatlicher Abschlag
+                        monat_match = re.search(r"(\d+[,.]\d+)\s*€\s*/\s*Monat", card_text)
+                        if monat_match:
+                            preis_monat = clean_float(monat_match.group(1))
+                        else:
+                            preis_monat = round(preis_jahr / 12, 2)
 
-                    # Monatlicher Abschlag
-                    monat_match = re.search(r"≈\s*(\d+[,.]\d+)\s*€\s*/\s*Monat", card_text)
-                    if monat_match:
-                        preis_monat = clean_float(monat_match.group(1))
-                    else:
-                        preis_monat = round(preis_jahr / 12, 2)
+                        ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
 
-                    ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
-
-                    tarife_liste.append({
-                        "provider": "Octopus Energy",
-                        "tariff": title,
-                        "arbeitspreis_ct": arbeitspreis,
-                        "grundpreis_euro": grundpreis,
-                        "preis_monat_euro": preis_monat,
-                        "preis_jahr_euro": preis_jahr,
-                        "ersparnis_jahr_euro": ersparnis,
-                        "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
-                        "link": "https://octopusenergy.de/signup/1-start"
-                    })
+                        tarife_liste.append({
+                            "provider": "Octopus Energy",
+                            "tariff": title,
+                            "arbeitspreis_ct": arbeitspreis,
+                            "grundpreis_euro": grundpreis,
+                            "preis_monat_euro": preis_monat,
+                            "preis_jahr_euro": preis_jahr,
+                            "ersparnis_jahr_euro": ersparnis,
+                            "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
+                            "link": f"https://octopusenergy.de/signup/1-start?postcode={plz}&kwh={kwh}"
+                        })
                 except Exception as ie:
-                    print(f"Fehler bei Karte: {ie}")
+                    continue
 
         except Exception as e:
             print(f"Scraper Haupt-Fehler: {e}")
