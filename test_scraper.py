@@ -38,10 +38,10 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
         page = await context.new_page()
 
         try:
-            # 1. Direkt zur Octopus Energy Rechner-Seite navigieren
+            # 1. Direkt zur Octopus Energy Signup/Rechner-Seite mit PLZ navigieren
             await page.goto(f"https://octopusenergy.de/signup/1-start?postcode={plz}", wait_until="domcontentloaded", timeout=30000)
 
-            # 2. Cookie Banner akzeptieren
+            # 2. Cookie Banner abfangen
             try:
                 cookie_btn = page.locator("button:has-text('Alle akzeptieren'), button:has-text('Akzeptieren'), #onetrust-accept-btn-handler").first
                 if await cookie_btn.is_visible(timeout=3000):
@@ -49,15 +49,13 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             except Exception:
                 pass
 
-            # 3. Falls nach Strom/Gas gefragt wird oder Verbrauchsangaben eingegeben werden müssen
+            # 3. Interaktion mit dem Formular (kWh Eingabe)
             try:
-                # Verbrauchs-Eingabefeld suchen und ausfüllen
                 kwh_input = page.locator("input[name*='consumption'], input[id*='kwh'], input[type='number']").first
                 if await kwh_input.is_visible(timeout=3000):
                     await kwh_input.fill("")
                     await kwh_input.type(str(kwh), delay=40)
                     
-                # Weiter / Berechnen Button klicken
                 submit_btn = page.locator("button[type='submit'], button:has-text('Weiter'), button:has-text('Tarife anzeigen')").first
                 if await submit_btn.is_visible(timeout=3000):
                     await submit_btn.click()
@@ -66,15 +64,15 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
 
             await page.wait_for_timeout(4000)
 
-            # 4. Text-Inhalt der Rechner-Seite auslesen
+            # 4. Text der Ergebnisseite auslesen
             raw_text = await page.evaluate("() => document.body.innerText")
 
-            # 5. Groq KI Prompt (Aktualisiertes Modell llama-3.3-70b-versatile)
+            # 5. Groq KI Prompt
             prompt = f"""
-            Analysiere den folgenden Text von der Octopus Energy Webseite für die PLZ {plz} und einen Jahresverbrauch von {kwh} kWh.
-            Extrahiere alle angebotenen Stromtarife mit ihren Preisen.
+            Analysiere den folgenden Text von der Octopus Energy Website für PLZ {plz} und {kwh} kWh/Jahr.
+            Extrahiere alle angebotenen Stromtarife und deren Preise.
 
-            Gib das Ergebnis AUSSCHLIESSLICH im folgenden JSON-Format zurück:
+            Gib deine Antwort AUSSCHLIESSLICH im folgenden JSON-Format zurück:
             {{
               "tarife": [
                 {{
@@ -90,9 +88,9 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             {raw_text[:6000]}
             """
 
-            # Aktuelles Groq-Modell aufrufen
+            # 6. Groq API-Aufruf mit aktiver Modell-ID
             completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="gpt-oss-120b",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 response_format={"type": "json_object"}
@@ -122,7 +120,7 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
                     })
 
         except Exception as e:
-            print(f"Scraper Error: {e}")
+            print(f"Scraper Fehler: {e}")
 
         finally:
             await browser.close()
