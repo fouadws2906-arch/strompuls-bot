@@ -5,6 +5,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY . /app/
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
+ENV PORT=10000
+EXPOSE 10000
+
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "10000"]
