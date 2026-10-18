@@ -1,4 +1,187 @@
 {
- "tarife": {},
+ "tarife": {
+  "44135": [
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax24",
+    "ap": 36.37,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "24 Monate",
+    "garantie": "24 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   },
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax12",
+    "ap": 37.35,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "12 Monate",
+    "garantie": "12 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   }
+  ],
+  "44139": [
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax24",
+    "ap": 36.37,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "24 Monate",
+    "garantie": "24 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   },
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax12",
+    "ap": 37.35,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "12 Monate",
+    "garantie": "12 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   }
+  ],
+  "44141": [
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax24",
+    "ap": 36.37,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "24 Monate",
+    "garantie": "24 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   },
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax12",
+    "ap": 37.35,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "12 Monate",
+    "garantie": "12 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   }
+  ],
+  "44143": [
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax24",
+    "ap": 36.37,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "24 Monate",
+    "garantie": "24 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   },
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax12",
+    "ap": 37.35,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "12 Monate",
+    "garantie": "12 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   }
+  ],
+  "44145": [
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax24",
+    "ap": 36.37,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "24 Monate",
+    "garantie": "24 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   },
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax12",
+    "ap": 37.35,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "12 Monate",
+    "garantie": "12 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   }
+  ],
+  "44147": [
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax24",
+    "ap": 36.37,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "24 Monate",
+    "garantie": "24 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   },
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax12",
+    "ap": 37.35,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "12 Monate",
+    "garantie": "12 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   }
+  ],
+  "44149": [
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax24",
+    "ap": 36.37,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "24 Monate",
+    "garantie": "24 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   },
+   {
+    "anbieter": "Octopus Energy",
+    "tarif": "Octopus relax12",
+    "ap": 37.35,
+    "gp": 15.51,
+    "bonus": 0,
+    "laufzeit": "12 Monate",
+    "garantie": "12 Monate",
+    "oeko": true,
+    "plz": [],
+    "link": "https://octopusenergy.de/"
+   }
+  ]
+ },
  "stand": "18.10.2026"
 }
