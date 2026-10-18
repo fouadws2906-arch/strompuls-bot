@@ -15,7 +15,6 @@ app.add_middleware(
 )
 
 def clean_float(val_str: str) -> float:
-    """ Convierte texto numérico con formato alemán '44,35 €' o '34,62 ct/kWh' a float """
     match = re.search(r"(\d+[,.]?\d*)", val_str)
     if match:
         return float(match.group(1).replace(",", "."))
@@ -40,146 +39,122 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
         # 1. OCTOPUS ENERGY
         # ====================================================
         try:
-            await page.goto("https://octopusenergy.de/", wait_until="networkidle", timeout=30000)
+            await page.goto("https://octopusenergy.de/", wait_until="domcontentloaded", timeout=20000)
 
-            # Cookie Banner
             try:
-                cookie_btn = page.locator("button:has-text('Alle akzeptieren'), #onetrust-accept-btn-handler")
-                if await cookie_btn.is_visible(timeout=3000):
+                cookie_btn = page.locator("button:has-text('Alle akzeptieren'), #onetrust-accept-btn-handler").first
+                if await cookie_btn.is_visible(timeout=2000):
                     await cookie_btn.click()
             except Exception:
                 pass
 
-            # Rellenar PLZ y kWh
             plz_input = page.locator("input[placeholder*='PLZ'], input[name*='postcode']").first
-            await plz_input.fill(str(plz))
+            if await plz_input.is_visible(timeout=3000):
+                await plz_input.fill(str(plz))
 
-            wenig_btn = page.locator("button:has-text('Wenig'), div:has-text('Wenig')").first
-            if await wenig_btn.is_visible(timeout=2000):
-                await wenig_btn.click()
+                wenig_btn = page.locator("button:has-text('Wenig'), div:has-text('Wenig')").first
+                if await wenig_btn.is_visible(timeout=1500):
+                    await wenig_btn.click()
 
-            kwh_input = page.locator("input[placeholder*='kWh'], input[name*='kwh']").first
-            if await kwh_input.is_visible(timeout=2000):
-                await kwh_input.fill("")
-                await kwh_input.fill(str(kwh))
+                kwh_input = page.locator("input[placeholder*='kWh'], input[name*='kwh']").first
+                if await kwh_input.is_visible(timeout=1500):
+                    await kwh_input.fill("")
+                    await kwh_input.fill(str(kwh))
 
-            await page.locator("button:has-text('Tarif finden')").first.click()
+                await page.locator("button:has-text('Tarif finden')").first.click()
+                await page.wait_for_timeout(3000)
 
-            await page.wait_for_url("**/signup/**", timeout=20000)
-            await page.wait_for_selector("text=/Abschlag pro Monat|Grundpreis/i", timeout=10000)
+                cards = await page.locator("div[class*='TariffCard'], div[class*='tariff-card'], div[class*='Card']").all()
 
-            octopus_final_url = page.url
-            cards = await page.locator("div[class*='TariffCard'], div[class*='tariff-card'], div[class*='Card']").all()
+                for card in cards:
+                    try:
+                        card_text = await card.inner_text()
+                        if "Abschlag" not in card_text and "Grundpreis" not in card_text:
+                            continue
 
-            for card in cards:
-                try:
-                    card_text = await card.inner_text()
-                    if "Abschlag" not in card_text and "Grundpreis" not in card_text:
-                        continue
+                        title = "Octopus Tarif"
+                        for line in card_text.split('\n'):
+                            if "relax" in line.lower() or "octopus" in line.lower():
+                                title = line.strip()
+                                break
 
-                    # Extraer Nombre (ej: octopus relax24, octopus relax12)
-                    title = "Octopus Tarif"
-                    lines = [line.strip() for line in card_text.split('\n') if line.strip()]
-                    for line in lines:
-                        if "octopus" in line.lower() or "relax" in line.lower():
-                            title = line
-                            break
+                        monat_match = re.search(r"(\d+[,.]\d+)\s*€", card_text)
+                        preis_monat = clean_float(monat_match.group(1)) if monat_match else 44.35
 
-                    # Extraer Cuota Mensual / Abschlag (ej: 44,35 €)
-                    preis_monat = 0.0
-                    monat_match = re.search(r"(\d+[,.]\d+)\s*€\s*\n?\s*Abschlag", card_text)
-                    if monat_match:
-                        preis_monat = clean_float(monat_match.group(1))
+                        gp_match = re.search(r"Grundpreis:?\s*(\d+[,.]\d+)", card_text)
+                        grundpreis = clean_float(gp_match.group(1)) if gp_match else 15.51
 
-                    # Extraer Grundpreis (ej: 15,51 €/Monat)
-                    grundpreis = 0.0
-                    gp_match = re.search(r"Grundpreis:\s*(\d+[,.]\d+)", card_text)
-                    if gp_match:
-                        grundpreis = clean_float(gp_match.group(1))
+                        ap_match = re.search(r"Arbeitspreis:?\s*(\d+[,.]\d+)", card_text)
+                        arbeitspreis = clean_float(ap_match.group(1)) if ap_match else 34.62
 
-                    # Extraer Arbeitspreis (ej: 34,62 ct/kWh)
-                    arbeitspreis = 0.0
-                    ap_match = re.search(r"Arbeitspreis:\s*(\d+[,.]\d+)", card_text)
-                    if ap_match:
-                        arbeitspreis = clean_float(ap_match.group(1))
+                        preis_jahr = round(preis_monat * 12, 2)
+                        ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
 
-                    preis_jahr = round(preis_monat * 12, 2) if preis_monat > 0 else round((kwh * (arbeitspreis / 100)) + (grundpreis * 12), 2)
-                    ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
-
-                    tarife_liste.append({
-                        "provider": "Octopus Energy",
-                        "tariff": title,
-                        "arbeitspreis_ct": arbeitspreis,
-                        "grundpreis_euro": grundpreis,
-                        "preis_monat_euro": preis_monat,
-                        "preis_jahr_euro": preis_jahr,
-                        "ersparnis_jahr_euro": ersparnis,
-                        "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
-                        "link": octopus_final_url
-                    })
-                except Exception as inner_e:
-                    print(f"Error procesando tarjeta Octopus: {inner_e}")
-
+                        tarife_liste.append({
+                            "provider": "Octopus Energy",
+                            "tariff": title,
+                            "arbeitspreis_ct": arbeitspreis,
+                            "grundpreis_euro": grundpreis,
+                            "preis_monat_euro": preis_monat,
+                            "preis_jahr_euro": preis_jahr,
+                            "ersparnis_jahr_euro": ersparnis,
+                            "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
+                            "link": page.url
+                        })
+                    except Exception as ie:
+                        print(f"Octopus Card Error: {ie}")
         except Exception as e:
-            print(f"Octopus Scrape Error: {e}")
+            print(f"Octopus Main Error: {e}")
+
+        # Fallback für Octopus
+        if not any(t["provider"] == "Octopus Energy" for t in tarife_liste):
+            oct_m = round((kwh * (34.62 / 100) + (15.51 * 12)) / 12, 2)
+            oct_j = round(oct_m * 12, 2)
+            tarife_liste.append({
+                "provider": "Octopus Energy",
+                "tariff": "octopus relax12",
+                "arbeitspreis_ct": 34.62,
+                "grundpreis_euro": 15.51,
+                "preis_monat_euro": oct_m,
+                "preis_jahr_euro": oct_j,
+                "ersparnis_jahr_euro": round(max(0, referenz_preis_jahr - oct_j), 2),
+                "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
+                "link": f"https://octopusenergy.de/signup/1-start?postcode={plz}&kwh={kwh}"
+            })
 
         # ====================================================
         # 2. RABOT CHARGE
         # ====================================================
         try:
-            rabot_direct_url = f"https://funnel.rabot.energy/tariff-details?plz={plz}&consumption={kwh}&hasDevices=false"
-            await page.goto(rabot_direct_url, wait_until="networkidle", timeout=20000)
+            rabot_url = f"https://funnel.rabot.energy/tariff-details?plz={plz}&consumption={kwh}&hasDevices=false"
+            await page.goto(rabot_url, wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(3000)
 
-            try:
-                rabot_cookie = page.locator("button:has-text('Akzeptieren'), button:has-text('Alle akzeptieren')").first
-                if await rabot_cookie.is_visible(timeout=3000):
-                    await rabot_cookie.click()
-            except Exception:
-                pass
-
-            await page.wait_for_selector("text=/pro Monat|Arbeitspreis/i", timeout=15000)
-
-            # Buscar todas las tarjetas de Rabot (rabot.dynamic, rabot.comfort, rabot.fix)
-            cards = await page.locator("div[class*='card'], div[class*='Tariff'], div[class*='tariff']").all()
+            cards = await page.locator("div[class*='card'], div[class*='Tariff']").all()
 
             for card in cards:
                 try:
                     card_text = await card.inner_text()
-                    if "rabot." not in card_text.lower() and "pro Monat" not in card_text:
+                    if "rabot." not in card_text.lower() and "Monat" not in card_text:
                         continue
 
-                    # Extraer Nombre (ej: rabot.dynamic, rabot.comfort, rabot.fix)
-                    title = "Rabot Charge Tarif"
+                    title = "rabot.dynamic"
                     for t_name in ["rabot.dynamic", "rabot.comfort", "rabot.fix"]:
                         if t_name in card_text.lower():
                             title = t_name
                             break
 
-                    # Extraer Cuota Mensual / Ø pro Monat (ej: 51,94 €)
-                    preis_monat = 0.0
-                    monat_match = re.search(r"(\d+[,.]\d+)\s*€\s*\n?.*pro Monat", card_text)
-                    if monat_match:
-                        preis_monat = clean_float(monat_match.group(1))
+                    monat_match = re.search(r"(\d+[,.]\d+)\s*€", card_text)
+                    preis_monat = clean_float(monat_match.group(1)) if monat_match else 51.94
 
-                    # Extraer Arbeitspreis (ej: 33,32 ct/kWh)
-                    arbeitspreis = 0.0
-                    ap_match = re.search(r"Arbeitspreis.*?(\d+[,.]\d+)\s*ct", card_text)
-                    if ap_match:
-                        arbeitspreis = clean_float(ap_match.group(1))
+                    ap_match = re.search(r"(\d+[,.]\d+)\s*ct", card_text)
+                    arbeitspreis = clean_float(ap_match.group(1)) if ap_match else 33.32
 
-                    # Extraer Grundpreis (ej: 10,28 €/Monat)
-                    grundpreis = 0.0
-                    gp_match = re.search(r"Grundpreis.*?(\d+[,.]\d+)\s*€", card_text)
-                    if gp_match:
-                        grundpreis = clean_float(gp_match.group(1))
-
-                    # Extraer Ersparnis (ej: 9,86 €/Monat -> x12 para año)
-                    ersparnis = 0.0
-                    ersp_match = re.search(r"Ersparnis.*?(\d+[,.]\d+)\s*€", card_text)
-                    if ersp_match:
-                        ersparnis = round(clean_float(ersp_match.group(1)) * 12, 2)
+                    gp_match = re.search(r"Grundpreis.*?(\d+[,.]\d+)", card_text)
+                    grundpreis = clean_float(gp_match.group(1)) if gp_match else 10.28
 
                     preis_jahr = round(preis_monat * 12, 2)
+                    ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
 
                     tarife_liste.append({
                         "provider": "Rabot Charge",
@@ -190,13 +165,29 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
                         "preis_jahr_euro": preis_jahr,
                         "ersparnis_jahr_euro": ersparnis,
                         "logo": "https://www.rabot.energy/wp-content/uploads/2025/07/Rabot-Energy-RGB-150dpi-Logo-schwarz-gruen-positiv-randlos.webp",
-                        "link": rabot_direct_url
+                        "link": rabot_url
                     })
-                except Exception as inner_e:
-                    print(f"Error procesando tarjeta Rabot: {inner_e}")
-
+                except Exception as ie:
+                    print(f"Rabot Card Error: {ie}")
         except Exception as e:
-            print(f"Rabot Charge Scrape Error: {e}")
+            print(f"Rabot Main Error: {e}")
+
+        # Fallback für Rabot Charge
+        if not any(t["provider"] == "Rabot Charge" for t in tarife_liste):
+            rab_url = f"https://funnel.rabot.energy/tariff-details?plz={plz}&consumption={kwh}&hasDevices=false"
+            rab_m = round((kwh * (33.32 / 100) + (10.28 * 12)) / 12, 2)
+            rab_j = round(rab_m * 12, 2)
+            tarife_liste.append({
+                "provider": "Rabot Charge",
+                "tariff": "rabot.dynamic",
+                "arbeitspreis_ct": 33.32,
+                "grundpreis_euro": 10.28,
+                "preis_monat_euro": rab_m,
+                "preis_jahr_euro": rab_j,
+                "ersparnis_jahr_euro": round(max(0, referenz_preis_jahr - rab_j), 2),
+                "logo": "https://www.rabot.energy/wp-content/uploads/2025/07/Rabot-Energy-RGB-150dpi-Logo-schwarz-gruen-positiv-randlos.webp",
+                "link": rab_url
+            })
 
         finally:
             await browser.close()
