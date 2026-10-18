@@ -1,0 +1,32 @@
+# Ablegen als: .github/workflows/scrape.yml
+name: Tarife aktualisieren
+on:
+  schedule:
+    - cron: "17 2 * * *"      # jede Nacht ca. 03:17/04:17 Uhr deutscher Zeit
+  workflow_dispatch:           # zusätzlich per Button manuell startbar
+permissions:
+  contents: write
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install playwright && playwright install --with-deps chromium
+      - run: python scraper.py --plz-file plz.txt
+        env:
+          AFFILIATE_LINK: ${{ secrets.AFFILIATE_LINK }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug
+          path: debug/
+      - name: tarife.json speichern
+        if: always()
+        run: |
+          git config user.name "tarif-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add tarife.json || true
+          git diff --cached --quiet || (git commit -m "Tarife aktualisiert" && git push)
