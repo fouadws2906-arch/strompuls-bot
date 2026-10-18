@@ -15,12 +15,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Liste von Groq-Modellen, die nacheinander probiert werden
+GROQ_MODELS = [
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "mixtral-8x7b-32768",
+    "llama3-8b-8192"
+]
+
 @app.get("/scrape")
 async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
     api_key = os.getenv("GROQ_API_KEY")
     tarife_liste = []
 
-    # 1. Obtener la página web de Octopus Energy para la PLZ indicada
+    # 1. Octopus Energy Seite für die spezifische PLZ abrufen
     url = f"https://octopusenergy.de/signup/1-start?postcode={plz}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -35,61 +43,66 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
     except Exception as e:
         print(f"Fetch Error: {e}")
 
-    # 2. Extraer todas las tarifas con el modelo activo de Groq
-    if api_key and len(raw_text) > 1000:
-        try:
-            client = Groq(api_key=api_key)
-            prompt = f"""
-            Du bist ein Stromtarif-Extraktor.
-            Analysiere den folgenden Text der Octopus Energy Website für PLZ {plz} und {kwh} kWh/Jahr.
-            Extrahiere ALLE unterschiedlichen Stromtarife (z. B. Octopus Basic, Octopus Fixed, OctoPlus, Octopus Go usw.), die erwähnt werden.
+    # 2. KI mit Modell-Fallback aufrufen
+    if api_key and len(raw_text) > 500:
+        client = Groq(api_key=api_key)
+        prompt = f"""
+        Du bist ein Stromtarif-Extraktor.
+        Analysiere den folgenden Text der Octopus Energy Website für PLZ {plz} und {kwh} kWh/Jahr.
+        Extrahiere ALLE unterschiedlichen Stromtarife (z. B. Octopus Basic, Octopus Fixed, OctoPlus, Octopus Go usw.), die erwähnt werden.
 
-            Antworte AUSSCHLIESSLICH im folgenden JSON-Format mit einer Liste in "tarife":
+        Antworte AUSSCHLIESSLICH im folgenden JSON-Format mit einer Liste in "tarife":
+        {{
+          "tarife": [
             {{
-              "tarife": [
-                {{
-                  "tariff": "Octopus Basic Strom",
-                  "arbeitspreis_ct": 29.80,
-                  "grundpreis_euro": 11.50
-                }},
-                {{
-                  "tariff": "Octopus Fixed 12",
-                  "arbeitspreis_ct": 28.50,
-                  "grundpreis_euro": 12.00
-                }}
-              ]
+              "tariff": "Octopus Basic Strom",
+              "arbeitspreis_ct": 29.80,
+              "grundpreis_euro": 11.50
+            }},
+            {{
+              "tariff": "Octopus Fixed 12",
+              "arbeitspreis_ct": 28.50,
+              "grundpreis_euro": 12.00
             }}
+          ]
+        }}
 
-            Text:
-            {raw_text[:7000]}
-            """
+        Text:
+        {raw_text[:7000]}
+        """
 
-            # Cambio de modelo a llama-3.3-70b-versatile
-            completion = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
-                response_format={"type": "json_object"}
-            )
+        for model_name in GROQ_MODELS:
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0,
+                    response_format={"type": "json_object"}
+                )
+                result_json = json.loads(completion.choices[0].message.content)
+                extracted = result_json.get("tarife", [])
 
-            result_json = json.loads(completion.choices[0].message.content)
-            extracted = result_json.get("tarife", [])
+                for item in extracted:
+                    ap = float(item.get("arbeitspreis_ct", 0))
+                    gp = float(item.get("grundpreis_euro", 0))
+                    if ap > 0:
+                        preis_jahr = round((kwh * (ap / 100)) + (gp * 12), 2)
+                        tarife_liste.append({
+                            "tariff": item.get("tariff", "Octopus Tarif"),
+                            "arbeitspreis_ct": ap,
+                            "grundpreis_euro": gp,
+                            "preis_jahr_euro": preis_jahr
+                        })
+                
+                # Wenn wir erfolgreich Daten extrahiert haben, brechen wir die Schleife ab
+                if tarife_liste:
+                    break
 
-            for item in extracted:
-                ap = float(item.get("arbeitspreis_ct", 0))
-                gp = float(item.get("grundpreis_euro", 0))
-                if ap > 0:
-                    preis_jahr = round((kwh * (ap / 100)) + (gp * 12), 2)
-                    tarife_liste.append({
-                        "tariff": item.get("tariff", "Octopus Tarif"),
-                        "arbeitspreis_ct": ap,
-                        "grundpreis_euro": gp,
-                        "preis_jahr_euro": preis_jahr
-                    })
-        except Exception as e:
-            print(f"KI Error: {e}")
+            except Exception as e:
+                print(f"Modell {model_name} fehlgeschlagen, versuche nächstes... Fehler: {e}")
+                continue
 
-    # 3. Respaldo dinámico si la web bloquea el contenido o no devuelve texto HTML directo
+    # 3. Fallback: Dynamische Generierung von Octopus-Tarifoptionen basierend auf PLZ & kWh
     if not tarife_liste:
         tarife_liste = [
             {
@@ -109,7 +122,7 @@ async def scrape_tarife(plz: str = "44139", kwh: float = 1500.0):
             }
         ]
 
-    # 4. Cálculo final y formateo para el frontend
+    # 4. Monatsabtrag & Ersparnis für die Liste im Frontend berechnen
     referenz_preis_jahr = (kwh * 0.38) + (12.50 * 12)
     final_tarife = []
 
