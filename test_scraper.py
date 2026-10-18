@@ -1,10 +1,9 @@
-import asyncio
+import os
 import json
-import re
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
-import openai  # oder ein anderer KI-Anbieter
+from groq import Groq
 
 app = FastAPI()
 
@@ -16,7 +15,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = openai.OpenAI(api_key="DEIN_OPENAI_API_KEY")
+# Inicializa el cliente con la API Key gratuita de Groq
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 @app.get("/scrape")
 async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
@@ -33,9 +33,10 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
         page = await context.new_page()
 
         try:
+            # 1. Cargar la página
             await page.goto("https://energiemarie.de/stromanbieter/octopus-energy", wait_until="domcontentloaded", timeout=30000)
 
-            # Cookie Banner
+            # 2. Aceptar Cookies
             try:
                 cookie_btn = page.locator("button:has-text('Alle akzeptieren'), #didomi-notice-agree-button, button:has-text('Akzeptieren')").first
                 if await cookie_btn.is_visible(timeout=2500):
@@ -43,7 +44,7 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             except Exception:
                 pass
 
-            # PLZ + kWh Formular
+            # 3. Llenar formulario
             plz_input = page.locator("input[placeholder*='PLZ'], input[name*='zip'], input[id*='plz']").first
             if await plz_input.is_visible(timeout=3000):
                 await plz_input.fill("")
@@ -60,67 +61,65 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
 
             await page.wait_for_timeout(4000)
 
-            # Extrahiere den reinen Text des relevanten Bereichs
-            page_text = await page.evaluate("() => document.body.innerText")
+            # 4. Extraer el texto completo
+            raw_text = await page.evaluate("() => document.body.innerText")
 
-            # KI-PROMPT: Extrahieren der exakten Tarifstruktur als JSON
+            # 5. Prompt para el modelo gratuito Llama 3
             prompt = f"""
-            Du bist ein Daten-Parser. Extrahiere alle Octopus Energy Stromtarife aus folgendem Website-Text für PLZ {plz} und {kwh} kWh.
-            
-            Wichtig:
-            - Nimm den tatsächlichen Jahrespreis (brutto, inkl. Boni/Steuern) der großen Anzeige (z. B. 676 €/Jahr).
-            - Berechne oder entnimm den Monatspreis (z. B. 56.33 €/Monat).
-            
-            Gib ausschließlich ein valides JSON-Array im folgenden Format zurück:
-            [
-              {{
-                "tariff": "Select+ Secure 24 Strom",
-                "arbeitspreis_ct": 38.05,
-                "grundpreis_euro": 8.79,
-                "preis_jahr_euro": 676.0,
-                "preis_monat_euro": 56.33,
-                "bonus_euro": 119.0
-              }}
-            ]
+            Extract all Octopus Energy electricity tariffs from the following text for ZIP code {plz} and {kwh} kWh/year.
 
-            Website-Text:
-            {page_text[:4000]}
+            Rules:
+            1. Find the total annual price in euros (gross, e.g. 676).
+            2. Extract working price (arbeitspreis_ct) and base price (grundpreis_euro).
+            
+            Return ONLY a valid JSON object with this exact structure:
+            {{
+              "tarife": [
+                {{
+                  "tariff": "Select+ Secure 24 Strom",
+                  "arbeitspreis_ct": 38.05,
+                  "grundpreis_euro": 8.79,
+                  "preis_jahr_euro": 676.0
+                }}
+              ]
+            }}
+
+            Text:
+            {raw_text[:4000]}
             """
 
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
+            completion = client.chat.completions.create(
+                model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0,
                 response_format={"type": "json_object"}
             )
 
-            raw_json = response.choices[0].message.content
-            parsed_data = json.loads(raw_json)
-
-            # Falls KI ein Objekt mit Key "tarife" liefert, anpassen
-            items = parsed_data if isinstance(parsed_data, list) else parsed_data.get("tarife", parsed_data.get("results", []))
+            result_json = json.loads(completion.choices[0].message.content)
+            extracted_tarife = result_json.get("tarife", [])
 
             referenz_preis_jahr = (kwh * 0.38) + (12.50 * 12)
 
-            for item in items:
+            for item in extracted_tarife:
                 preis_jahr = float(item.get("preis_jahr_euro", 0))
-                preis_monat = float(item.get("preis_monat_euro", round(preis_jahr / 12, 2)))
+                preis_monat = round(preis_jahr / 12, 2)
                 ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
 
-                tarife_liste.append({
-                    "provider": "Octopus Energy",
-                    "tariff": item.get("tariff", "Octopus Energy Tarif"),
-                    "arbeitspreis_ct": float(item.get("arbeitspreis_ct", 0)),
-                    "grundpreis_euro": float(item.get("grundpreis_euro", 0)),
-                    "preis_monat_euro": preis_monat,
-                    "preis_jahr_euro": preis_jahr,
-                    "ersparnis_jahr_euro": ersparnis,
-                    "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
-                    "link": f"https://octopusenergy.de/signup/1-start?postcode={plz}&kwh={kwh}"
-                })
+                if preis_jahr > 0:
+                    tarife_liste.append({
+                        "provider": "Octopus Energy",
+                        "tariff": item.get("tariff", "Octopus Energy Tarif"),
+                        "arbeitspreis_ct": float(item.get("arbeitspreis_ct", 0)),
+                        "grundpreis_euro": float(item.get("grundpreis_euro", 0)),
+                        "preis_monat_euro": preis_monat,
+                        "preis_jahr_euro": preis_jahr,
+                        "ersparnis_jahr_euro": ersparnis,
+                        "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
+                        "link": f"https://octopusenergy.de/signup/1-start?postcode={plz}&kwh={kwh}"
+                    })
 
         except Exception as e:
-            print(f"Fehler beim Scraping/KI: {e}")
+            print(f"Error scraping/IA: {e}")
 
         finally:
             await browser.close()
