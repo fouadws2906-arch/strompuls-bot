@@ -14,11 +14,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def clean_float(val_str: str) -> float:
+    """ Convierte texto numérico con formato alemán '44,35 €' o '34,62 ct/kWh' a float """
+    match = re.search(r"(\d+[,.]?\d*)", val_str)
+    if match:
+        return float(match.group(1).replace(",", "."))
+    return 0.0
+
 @app.get("/scrape")
 async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
     tarife_liste = []
-    
-    # Precio de referencia estándar (~38 ct/kWh + 12.50 €/mes) para calcular ahorro relativo
     referenz_preis_jahr = (kwh * 0.38) + (12.50 * 12)
 
     async with async_playwright() as p:
@@ -32,7 +37,7 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
         page = await context.new_page()
 
         # ====================================================
-        # 1. OCTOPUS ENERGY (Scraping dinámico)
+        # 1. OCTOPUS ENERGY
         # ====================================================
         try:
             await page.goto("https://octopusenergy.de/", wait_until="networkidle", timeout=30000)
@@ -45,7 +50,7 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             except Exception:
                 pass
 
-            # Formulario Octopus
+            # Rellenar PLZ y kWh
             plz_input = page.locator("input[placeholder*='PLZ'], input[name*='postcode']").first
             await plz_input.fill(str(plz))
 
@@ -60,44 +65,55 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
 
             await page.locator("button:has-text('Tarif finden')").first.click()
 
-            # Esperar a los resultados de Octopus
             await page.wait_for_url("**/signup/**", timeout=20000)
-            await page.wait_for_selector("[class*='tariff'], [class*='card'], article", timeout=10000)
+            await page.wait_for_selector("text=/Abschlag pro Monat|Grundpreis/i", timeout=10000)
 
             octopus_final_url = page.url
-            cards = await page.locator("div[class*='tariff-card'], div[class*='TariffCard'], article").all()
+            cards = await page.locator("div[class*='TariffCard'], div[class*='tariff-card'], div[class*='Card']").all()
 
             for card in cards:
                 try:
-                    title_el = card.locator("h2, h3, h4, [class*='title']").first
-                    title = await title_el.inner_text() if await title_el.is_visible() else "Octopus Strom"
+                    card_text = await card.inner_text()
+                    if "Abschlag" not in card_text and "Grundpreis" not in card_text:
+                        continue
 
-                    arbeitspreis = 27.5
-                    ap_el = card.locator("text=/\\d+[,.]\\d+\\s*ct/i").first
-                    if await ap_el.is_visible():
-                        match = re.search(r"(\d+[,.]?\d*)", await ap_el.inner_text())
-                        if match:
-                            arbeitspreis = float(match.group(1).replace(",", "."))
+                    # Extraer Nombre (ej: octopus relax24, octopus relax12)
+                    title = "Octopus Tarif"
+                    lines = [line.strip() for line in card_text.split('\n') if line.strip()]
+                    for line in lines:
+                        if "octopus" in line.lower() or "relax" in line.lower():
+                            title = line
+                            break
 
-                    grundpreis = 10.90
-                    gp_el = card.locator("text=/\\d+[,.]\\d+\\s*€/i").first
-                    if await gp_el.is_visible():
-                        match = re.search(r"(\d+[,.]?\d*)", await gp_el.inner_text())
-                        if match:
-                            grundpreis = float(match.group(1).replace(",", "."))
+                    # Extraer Cuota Mensual / Abschlag (ej: 44,35 €)
+                    preis_monat = 0.0
+                    monat_match = re.search(r"(\d+[,.]\d+)\s*€\s*\n?\s*Abschlag", card_text)
+                    if monat_match:
+                        preis_monat = clean_float(monat_match.group(1))
 
-                    gesamt_jahr = round((kwh * (arbeitspreis / 100)) + (grundpreis * 12), 2)
-                    gesamt_monat = round(gesamt_jahr / 12, 2)
-                    ersparnis_jahr = round(max(0, referenz_preis_jahr - gesamt_jahr), 2)
+                    # Extraer Grundpreis (ej: 15,51 €/Monat)
+                    grundpreis = 0.0
+                    gp_match = re.search(r"Grundpreis:\s*(\d+[,.]\d+)", card_text)
+                    if gp_match:
+                        grundpreis = clean_float(gp_match.group(1))
+
+                    # Extraer Arbeitspreis (ej: 34,62 ct/kWh)
+                    arbeitspreis = 0.0
+                    ap_match = re.search(r"Arbeitspreis:\s*(\d+[,.]\d+)", card_text)
+                    if ap_match:
+                        arbeitspreis = clean_float(ap_match.group(1))
+
+                    preis_jahr = round(preis_monat * 12, 2) if preis_monat > 0 else round((kwh * (arbeitspreis / 100)) + (grundpreis * 12), 2)
+                    ersparnis = round(max(0, referenz_preis_jahr - preis_jahr), 2)
 
                     tarife_liste.append({
                         "provider": "Octopus Energy",
-                        "tariff": title.strip(),
+                        "tariff": title,
                         "arbeitspreis_ct": arbeitspreis,
                         "grundpreis_euro": grundpreis,
-                        "preis_jahr_euro": gesamt_jahr,
-                        "preis_monat_euro": gesamt_monat,
-                        "ersparnis_jahr_euro": ersparnis_jahr,
+                        "preis_monat_euro": preis_monat,
+                        "preis_jahr_euro": preis_jahr,
+                        "ersparnis_jahr_euro": ersparnis,
                         "logo": "https://www.texaselectricityratings.com/images/logos/png/800/octopus-energy.png",
                         "link": octopus_final_url
                     })
@@ -108,15 +124,12 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             print(f"Octopus Scrape Error: {e}")
 
         # ====================================================
-        # 2. RABOT CHARGE (Directo al Funnel con hasDevices=false)
+        # 2. RABOT CHARGE
         # ====================================================
         try:
             rabot_direct_url = f"https://funnel.rabot.energy/tariff-details?plz={plz}&consumption={kwh}&hasDevices=false"
-            
-            # Navegar directamente al funnel ya configurado
             await page.goto(rabot_direct_url, wait_until="networkidle", timeout=20000)
 
-            # Aceptar cookies si aparecen
             try:
                 rabot_cookie = page.locator("button:has-text('Akzeptieren'), button:has-text('Alle akzeptieren')").first
                 if await rabot_cookie.is_visible(timeout=3000):
@@ -124,55 +137,66 @@ async def scrape_tarife(plz: str = "10115", kwh: int = 1500):
             except Exception:
                 pass
 
-            # Esperar a que se rendericen los precios dinámicos
-            await page.wait_for_selector("text=/ct\\/kWh|€\\/Monat|Tarif/i", timeout=15000)
+            await page.wait_for_selector("text=/pro Monat|Arbeitspreis/i", timeout=15000)
 
-            rabot_ap = 25.8
-            ap_el = page.locator("text=/\\d+[,.]\\d+\\s*ct/i").first
-            if await ap_el.is_visible():
-                match = re.search(r"(\d+[,.]?\d*)", await ap_el.inner_text())
-                if match:
-                    rabot_ap = float(match.group(1).replace(",", "."))
+            # Buscar todas las tarjetas de Rabot (rabot.dynamic, rabot.comfort, rabot.fix)
+            cards = await page.locator("div[class*='card'], div[class*='Tariff'], div[class*='tariff']").all()
 
-            rabot_gp = 9.90
-            gp_el = page.locator("text=/\\d+[,.]\\d+\\s*€/i").first
-            if await gp_el.is_visible():
-                match = re.search(r"(\d+[,.]?\d*)", await gp_el.inner_text())
-                if match:
-                    rabot_gp = float(match.group(1).replace(",", "."))
+            for card in cards:
+                try:
+                    card_text = await card.inner_text()
+                    if "rabot." not in card_text.lower() and "pro Monat" not in card_text:
+                        continue
 
-            rabot_jahr = round((kwh * (rabot_ap / 100)) + (rabot_gp * 12), 2)
-            rabot_monat = round(rabot_jahr / 12, 2)
-            rabot_ersparnis = round(max(0, referenz_preis_jahr - rabot_jahr), 2)
+                    # Extraer Nombre (ej: rabot.dynamic, rabot.comfort, rabot.fix)
+                    title = "Rabot Charge Tarif"
+                    for t_name in ["rabot.dynamic", "rabot.comfort", "rabot.fix"]:
+                        if t_name in card_text.lower():
+                            title = t_name
+                            break
 
-            tarife_liste.append({
-                "provider": "Rabot Charge",
-                "tariff": "Rabot Dynamic Pur",
-                "arbeitspreis_ct": rabot_ap,
-                "grundpreis_euro": rabot_gp,
-                "preis_jahr_euro": rabot_jahr,
-                "preis_monat_euro": rabot_monat,
-                "ersparnis_jahr_euro": rabot_ersparnis,
-                "logo": "https://www.rabot.energy/wp-content/uploads/2025/07/Rabot-Energy-RGB-150dpi-Logo-schwarz-gruen-positiv-randlos.webp",
-                "link": rabot_direct_url
-            })
+                    # Extraer Cuota Mensual / Ø pro Monat (ej: 51,94 €)
+                    preis_monat = 0.0
+                    monat_match = re.search(r"(\d+[,.]\d+)\s*€\s*\n?.*pro Monat", card_text)
+                    if monat_match:
+                        preis_monat = clean_float(monat_match.group(1))
+
+                    # Extraer Arbeitspreis (ej: 33,32 ct/kWh)
+                    arbeitspreis = 0.0
+                    ap_match = re.search(r"Arbeitspreis.*?(\d+[,.]\d+)\s*ct", card_text)
+                    if ap_match:
+                        arbeitspreis = clean_float(ap_match.group(1))
+
+                    # Extraer Grundpreis (ej: 10,28 €/Monat)
+                    grundpreis = 0.0
+                    gp_match = re.search(r"Grundpreis.*?(\d+[,.]\d+)\s*€", card_text)
+                    if gp_match:
+                        grundpreis = clean_float(gp_match.group(1))
+
+                    # Extraer Ersparnis (ej: 9,86 €/Monat -> x12 para año)
+                    ersparnis = 0.0
+                    ersp_match = re.search(r"Ersparnis.*?(\d+[,.]\d+)\s*€", card_text)
+                    if ersp_match:
+                        ersparnis = round(clean_float(ersp_match.group(1)) * 12, 2)
+
+                    preis_jahr = round(preis_monat * 12, 2)
+
+                    tarife_liste.append({
+                        "provider": "Rabot Charge",
+                        "tariff": title,
+                        "arbeitspreis_ct": arbeitspreis,
+                        "grundpreis_euro": grundpreis,
+                        "preis_monat_euro": preis_monat,
+                        "preis_jahr_euro": preis_jahr,
+                        "ersparnis_jahr_euro": ersparnis,
+                        "logo": "https://www.rabot.energy/wp-content/uploads/2025/07/Rabot-Energy-RGB-150dpi-Logo-schwarz-gruen-positiv-randlos.webp",
+                        "link": rabot_direct_url
+                    })
+                except Exception as inner_e:
+                    print(f"Error procesando tarjeta Rabot: {inner_e}")
 
         except Exception as e:
             print(f"Rabot Charge Scrape Error: {e}")
-            # Fallback en caso de que tarde más de lo debido en responder
-            rabot_direct_url = f"https://funnel.rabot.energy/tariff-details?plz={plz}&consumption={kwh}&hasDevices=false"
-            rabot_jahr = round((kwh * 0.258) + (9.90 * 12), 2)
-            tarife_liste.append({
-                "provider": "Rabot Charge",
-                "tariff": "Rabot Dynamic Pur",
-                "arbeitspreis_ct": 25.8,
-                "grundpreis_euro": 9.90,
-                "preis_jahr_euro": rabot_jahr,
-                "preis_monat_euro": round(rabot_jahr / 12, 2),
-                "ersparnis_jahr_euro": round(max(0, referenz_preis_jahr - rabot_jahr), 2),
-                "logo": "https://www.rabot.energy/wp-content/uploads/2025/07/Rabot-Energy-RGB-150dpi-Logo-schwarz-gruen-positiv-randlos.webp",
-                "link": rabot_direct_url
-            })
 
         finally:
             await browser.close()
