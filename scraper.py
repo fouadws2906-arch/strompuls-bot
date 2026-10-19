@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Octopus-Tarif-Scraper für strompuls.de
 
-Ablauf wie ein Besucher auf octopusenergy.de:
-  PLZ eingeben -> "Wenig" klicken -> kWh/Jahr eintragen -> "Tarif finden"
-  -> Tarifkarten (relax12, relax24, ...) auslesen -> tarife.json
-
-Aufruf:  python scraper.py --plz-file plz.txt
-         python scraper.py --plz 44139 --kwh 2500
+Aufruf:
+    python scraper.py --plz-file plz.txt
+    python scraper.py --plz 44139 --kwh 2500
 """
 import argparse, json, os, random, re, sys, time
 from datetime import date
@@ -19,7 +16,6 @@ OUT = Path("tarife.json")
 DEBUG = Path("debug")
 LINK = os.environ.get("AFFILIATE_LINK") or START_URL
 
-# Liefert den Text der Tarifkarte, in der ein "Tarif wählen"-Button steckt.
 CARD_JS = """el => { let n = el;
   while (n.parentElement) {
     n = n.parentElement;
@@ -53,12 +49,18 @@ def parse_card(t):
         name = f"Octopus {lz.group(1)} Monate"
     else:
         name = "Octopus Tarif"
-    return {"anbieter": "Octopus Energy", "tarif": name,
-            "ap": round(de_num(ap.group(1)), 2), "gp": round(de_num(gp.group(1)), 2),
-            "bonus": 0,
-            "laufzeit": f"{lz.group(1)} Monate" if lz else "",
-            "garantie": f"{pg.group(1)} Monate" if pg else "",
-            "oeko": True, "plz": [], "link": LINK}
+    return {
+        "anbieter": "Octopus Energy",
+        "tarif": name,
+        "ap": round(de_num(ap.group(1)), 2),
+        "gp": round(de_num(gp.group(1)), 2),
+        "bonus": 0,
+        "laufzeit": f"{lz.group(1)} Monate" if lz else "",
+        "garantie": f"{pg.group(1)} Monate" if pg else "",
+        "oeko": True,
+        "plz": [],
+        "link": LINK
+    }
 
 
 def accept_cookies(page):
@@ -71,10 +73,13 @@ def accept_cookies(page):
 
 
 def fill_field(page, pattern, value):
-    """Sichtbares Feld finden (Seite hat Desktop- und Mobil-Formular), leeren, tippen."""
     rx = re.compile(pattern, re.I)
-    makers = (lambda: page.get_by_placeholder(rx), lambda: page.get_by_label(rx),
-              lambda: page.get_by_role("textbox", name=rx), lambda: page.get_by_role("spinbutton", name=rx))
+    makers = (
+        lambda: page.get_by_placeholder(rx),
+        lambda: page.get_by_label(rx),
+        lambda: page.get_by_role("textbox", name=rx),
+        lambda: page.get_by_role("spinbutton", name=rx)
+    )
     for make in makers:
         try:
             loc = make().filter(visible=True).first
@@ -88,9 +93,12 @@ def fill_field(page, pattern, value):
 
 
 def scrape_plz(browser, plz, kwh):
-    ctx = browser.new_context(locale="de-DE", viewport={"width": 1366, "height": 900},
-                              user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-                                          "Chrome/124.0 Safari/537.36"))
+    ctx = browser.new_context(
+        locale="de-DE",
+        viewport={"width": 1366, "height": 900},
+        user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0 Safari/537.36")
+    )
     page = ctx.new_page()
     tarife = []
     try:
@@ -101,7 +109,8 @@ def scrape_plz(browser, plz, kwh):
         if not fill_field(page, r"Deine PLZ|PLZ", plz):
             print(f"[{plz}] PLZ-Feld nicht gefunden", file=sys.stderr)
         page.wait_for_timeout(1200)
-        try:   # falls eine Ortsauswahl erscheint
+        
+        try:  # falls eine Ortsauswahl erscheint
             page.get_by_role("option").filter(visible=True).first.click(timeout=1500)
         except Exception:
             pass
@@ -110,6 +119,7 @@ def scrape_plz(browser, plz, kwh):
             page.get_by_text("Wenig", exact=True).filter(visible=True).first.click(timeout=3000)
         except Exception:
             print(f"[{plz}] 'Wenig' nicht gefunden", file=sys.stderr)
+            
         if not fill_field(page, r"kWh", kwh):
             print(f"[{plz}] kWh-Feld nicht gefunden", file=sys.stderr)
 
@@ -153,11 +163,14 @@ def main():
     data = json.loads(OUT.read_text()) if OUT.exists() else {"tarife": {}}
     ok = 0
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        )
         for plz in plzs:
             tarife = scrape_plz(browser, plz, a.kwh)
             print(f"[{plz}] {len(tarife)} Tarife: " + ", ".join(f"{t['tarif']} {t['ap']} ct / {t['gp']} €" for t in tarife))
-            if tarife:                       # bei Fehlschlag alte Daten behalten
+            if tarife:
                 data["tarife"][plz] = tarife
                 ok += 1
             time.sleep(random.uniform(3, 6))
