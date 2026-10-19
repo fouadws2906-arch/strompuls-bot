@@ -1,13 +1,4 @@
-"""strompuls Live-Server (Hybrid)
-
-GET /tarife?plz=44139
-  -> {"status": "ready", "gruppen": [...Tarife...], "stand": "..."}   Treffer im Cache
-  -> {"status": "pending"}                                            wird gerade im Hintergrund geholt
-  -> {"status": "unavailable" | "unbekannt" | "busy"} / HTTP 429        nichts zu holen / zu viel los
-
-Ein einziger Worker mit einem Browser arbeitet die Warteschlange nacheinander ab.
-Ergebnisse werden in SQLite zwischengespeichert.
-"""
+"""strompuls Live-Server (100% Live)"""
 import json
 import os
 import queue
@@ -22,8 +13,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+# El directorio de datos, mapeado al disco duro de Fly.io
 DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 CACHE_TAGE = int(os.environ.get("CACHE_TAGE", "7"))
 SCRAPE_KWH = int(os.environ.get("SCRAPE_KWH", "2500"))
 ORIGINS = [o.strip() for o in os.environ.get(
@@ -40,10 +33,10 @@ _db.commit()
 
 jobs = queue.Queue()
 pending = set()
-failed = {}      # plz -> Zeitpunkt des Fehlschlags
-hits = {}        # ip -> Zeitpunkte neuer Abfragen
+failed = {}
+hits = {}
 
-BEKANNT = None   # Menge gültiger PLZ (aus plz.txt)
+BEKANNT = None
 if Path("plz.txt").exists():
     BEKANNT = {l.strip() for l in Path("plz.txt").read_text().splitlines() if re.fullmatch(r"\d{5}", l.strip())}
 
