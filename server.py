@@ -1,13 +1,12 @@
 """strompuls Live-Server (Hybrid)
 
 GET /tarife?plz=44139
-  -> {"status": "ready", "gruppen": [[...Tarife...]], "stand": "..."}   Treffer im Cache
-  -> {"status": "pending"}                                              wird gerade im Hintergrund geholt
+  -> {"status": "ready", "gruppen": [...Tarife...], "stand": "..."}   Treffer im Cache
+  -> {"status": "pending"}                                            wird gerade im Hintergrund geholt
   -> {"status": "unavailable" | "unbekannt" | "busy"} / HTTP 429        nichts zu holen / zu viel los
 
-Ein einziger Worker mit einem Browser arbeitet die Warteschlange nacheinander ab (schont Octopus).
-Ergebnisse werden in SQLite zwischengespeichert (CACHE_TAGE Tage).
-Nur EIN uvicorn-Prozess verwenden (Warteschlange liegt im Speicher).
+Ein einziger Worker mit einem Browser arbeitet die Warteschlange nacheinander ab.
+Ergebnisse werden in SQLite zwischengespeichert.
 """
 import json
 import os
@@ -25,13 +24,13 @@ from fastapi.responses import JSONResponse
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "."))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-CACHE_TAGE = int(os.environ.get("CACHE_TAGE", "7"))          # so lange gelten gespeicherte Preise
+CACHE_TAGE = int(os.environ.get("CACHE_TAGE", "7"))
 SCRAPE_KWH = int(os.environ.get("SCRAPE_KWH", "2500"))
 ORIGINS = [o.strip() for o in os.environ.get(
     "ALLOWED_ORIGINS", "https://strompuls.de,https://www.strompuls.de").split(",") if o.strip()]
 MAX_QUEUE = int(os.environ.get("MAX_QUEUE", "100"))
-LIMIT_PRO_STUNDE = int(os.environ.get("LIMIT_PRO_STUNDE", "10"))  # neue Abfragen je IP und Stunde
-FEHLER_SPERRE = 3600                                          # Sekunden, bevor eine fehlgeschlagene PLZ erneut versucht wird
+LIMIT_PRO_STUNDE = int(os.environ.get("LIMIT_PRO_STUNDE", "10"))
+FEHLER_SPERRE = 3600
 
 _db_lock = threading.Lock()
 _q_lock = threading.Lock()
@@ -44,7 +43,7 @@ pending = set()
 failed = {}      # plz -> Zeitpunkt des Fehlschlags
 hits = {}        # ip -> Zeitpunkte neuer Abfragen
 
-BEKANNT = None   # Menge gültiger PLZ (aus plz.txt), schützt vor Unsinn-Abfragen
+BEKANNT = None   # Menge gültiger PLZ (aus plz.txt)
 if Path("plz.txt").exists():
     BEKANNT = {l.strip() for l in Path("plz.txt").read_text().splitlines() if re.fullmatch(r"\d{5}", l.strip())}
 
@@ -66,7 +65,6 @@ def cache_put(plz, gruppen):
 
 
 def abfrage(plz, ip):
-    """Kernlogik. Gibt (http_status, antwort_dict) zurück."""
     if not re.fullmatch(r"\d{5}", plz or ""):
         return 400, {"status": "ungueltig"}
     if BEKANNT is not None and plz not in BEKANNT:
@@ -98,23 +96,29 @@ def worker():
     import scraper
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+        )
         while True:
             plz = jobs.get()
             try:
-                gruppen, _ = scraper.hole_gruppen(browser, plz, SCRAPE_KWH, debug=False)
-                if gruppen:
-                    cache_put(plz, list(gruppen.values()))
+                tarife = scraper.scrape_plz(browser, plz, SCRAPE_KWH)
+                if tarife:
+                    cache_put(plz, tarife)
                 else:
                     failed[plz] = time.time()
-            except Exception as e:                       # Browser evtl. kaputt: neu starten
-                print(f"[{plz}] Fehler: {e}", flush=True)
+            except Exception as e:
+                print(f"[{plz}] Fehler im Worker: {e}", flush=True)
                 failed[plz] = time.time()
                 try:
                     browser.close()
                 except Exception:
                     pass
-                browser = pw.chromium.launch(headless=True)
+                browser = pw.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+                )
             finally:
                 with _q_lock:
                     pending.discard(plz)
@@ -122,7 +126,13 @@ def worker():
 
 
 app = FastAPI(title="strompuls live")
-app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=["GET"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"] if ORIGINS == ["*"] else ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
