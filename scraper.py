@@ -89,12 +89,106 @@ def fill_field(page, pattern, value):
     return False
 
 
-def scrape_plz(browser, plz, kwh):
+def pick_first_option(page):
+    try:
+        page.get_by_role("option").filter(visible=True).first.click(timeout=2500)
+        return True
+    except Exception:
+        return False
+
+
+def fill_address(page):
+    """PLZ mit mehreren Tarifgebieten: Octopus fragt Ort, Straße und Hausnummer ab.
+    Wir tippen einen Vokal, nehmen den ersten Vorschlag und Hausnummer 1."""
+    try:   # Ort: nur wenn leer
+        ort = page.get_by_label(re.compile(r"^Ort$", re.I)).filter(visible=True).first
+        if not (ort.input_value(timeout=1500) or "").strip():
+            ort.click()
+            ort.press_sequentially("a", delay=80)
+            page.wait_for_timeout(900)
+            pick_first_option(page)
+    except Exception:
+        pass
+    for vowel in ("a", "e", "i", "o", "u"):
+        try:
+            st = page.get_by_label(re.compile(r"Stra(ß|ss)e", re.I)).filter(visible=True).first
+            st.click(timeout=3000)
+            st.press("Control+A")
+            st.press_sequentially(vowel, delay=80)
+            page.wait_for_timeout(1000)
+            if pick_first_option(page):
+                break
+        except Exception:
+            continue
+    fill_field(page, r"Hausnummer", "1")
+    page.keyboard.press("Tab")
+    page.wait_for_timeout(1200)
+    for label in ("Tarife anzeigen", "Tarife ansehen", "Tarife finden", "Weiter"):
+        try:
+            page.get_by_role("button", name=re.compile(label, re.I)).filter(visible=True).first.click(timeout=1500)
+            break
+        except Exception:
+            pass
+    return True
+
+
+def sammle_tarife(page):
+    tarife = []
+    buttons = page.get_by_text(re.compile(r"^\s*Tarif wählen\s*$"))
+    for i in range(buttons.count()):
+        t = buttons.nth(i).evaluate(CARD_JS)
+        card = parse_card(t) if t else None
+        if card:
+            tarife.append(card)
+    return tarife
+
+
+def ergebnis_da(page, sekunden):
+    try:
+        page.wait_for_selector("text=Arbeitspreis", timeout=sekunden * 1000)
+        return True
+    except Exception:
+        return False
+
+
+def adresse_ausfuellen(page, buchstabe, idx):
+    """PLZ mit mehreren Tarifgebieten: Straße per Buchstabe wählen + Hausnummer 1."""
+    try:    # Ort leer? Dann ersten Vorschlag nehmen
+        ort = page.get_by_label(re.compile(r"^Ort", re.I)).filter(visible=True).first
+        if not ort.input_value():
+            ort.click(timeout=2000)
+            page.get_by_role("option").filter(visible=True).first.click(timeout=3000)
+    except Exception:
+        pass
+    strasse = page.get_by_label(re.compile(r"Stra(ß|ss)e", re.I)).filter(visible=True).first
+    strasse.click(timeout=4000)
+    strasse.press("Control+A")
+    strasse.press_sequentially(buchstabe, delay=100)
+    page.wait_for_timeout(1500)
+    opts = page.get_by_role("option").filter(visible=True)
+    n = opts.count()
+    if n == 0:
+        return False
+    opts.nth(min(idx, n - 1)).click(timeout=3000)
+    fill_field(page, r"Hausnummer", "1")
+    page.keyboard.press("Tab")
+    page.wait_for_timeout(800)
+    for label in ("Tarife anzeigen", "Angebote anzeigen", "Tarif finden", "Weiter"):
+        try:
+            page.get_by_role("button", name=re.compile(label, re.I)).filter(visible=True).first.click(timeout=1500)
+            break
+        except Exception:
+            pass
+    return True
+
+
+def scrape_plz(browser, plz, kwh, buchstabe="a", idx=0, debug=True):
+    """Gibt (tarife, adresse_noetig) zurück."""
     ctx = browser.new_context(locale="de-DE", viewport={"width": 1366, "height": 900},
                               user_agent=("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
                                           "Chrome/124.0 Safari/537.36"))
     page = ctx.new_page()
-    tarife = []
+    tarife, adresse = [], False
     try:
         page.goto(START_URL, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(2500)
@@ -116,26 +210,29 @@ def scrape_plz(browser, plz, kwh):
             print(f"[{plz}] kWh-Feld nicht gefunden", file=sys.stderr)
 
         page.get_by_role("button", name=re.compile(r"Tarif finden", re.I)).filter(visible=True).first.click(timeout=5000)
-        page.wait_for_selector("text=Arbeitspreis", timeout=40000)
-        page.wait_for_timeout(1500)
 
-        buttons = page.get_by_text(re.compile(r"^\s*Tarif wählen\s*$"))
-        for i in range(buttons.count()):
-            t = buttons.nth(i).evaluate(CARD_JS)
-            card = parse_card(t) if t else None
-            if card:
-                tarife.append(card)
+        if not ergebnis_da(page, 12):
+            hat_strasse = page.get_by_label(re.compile(r"Stra(ß|ss)e", re.I)).filter(visible=True).count() > 0
+            if hat_strasse:
+                adresse = True
+                if adresse_ausfuellen(page, buchstabe, idx):
+                    ergebnis_da(page, 30)
+            else:
+                ergebnis_da(page, 20)
+        page.wait_for_timeout(1000)
+        tarife = sammle_tarife(page)
     except Exception as e:
         print(f"[{plz}] Fehler: {e}", file=sys.stderr)
     finally:
-        try:
-            DEBUG.mkdir(exist_ok=True)
-            page.screenshot(path=str(DEBUG / f"{plz}.png"), full_page=True)
-            (DEBUG / f"{plz}.txt").write_text(page.inner_text("body"))
-        except Exception:
-            pass
+        if debug:
+            try:
+                DEBUG.mkdir(exist_ok=True)
+                page.screenshot(path=str(DEBUG / f"{plz}.png"), full_page=True)
+                (DEBUG / f"{plz}.txt").write_text(page.inner_text("body"))
+            except Exception:
+                pass
         ctx.close()
-    return tarife
+    return tarife, adresse
 
 
 def read_plz(path):
@@ -160,7 +257,9 @@ def gruppe_id(tarife):
 
 
 def save(data, state):
-    used = set(data["plz"].values())
+    used = set()
+    for v in data["plz"].values():
+        used.update(v if isinstance(v, list) else [v])
     data["gruppen"] = {k: v for k, v in data["gruppen"].items() if k in used}
     data["stand"] = date.today().strftime("%d.%m.%Y")
     OUT.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
@@ -199,12 +298,20 @@ def main():
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
         for i, plz in enumerate(batch, 1):
-            tarife = scrape_plz(browser, plz, a.kwh)
-            print(f"[{plz}] {len(tarife)} Tarife: " + ", ".join(f"{t['tarif']} {t['ap']} ct / {t['gp']} EUR" for t in tarife))
-            if tarife:                      # bei Fehlschlag alte Daten behalten
-                gid = gruppe_id(tarife)
-                data["gruppen"][gid] = tarife
-                data["plz"][plz] = gid
+            tarife, adr = scrape_plz(browser, plz, a.kwh)
+            gruppen = {gruppe_id(tarife): tarife} if tarife else {}
+            if tarife and adr:    # mehrere Tarifgebiete: zwei weitere Straßen prüfen
+                for buchstabe, idx in (("e", 1), ("i", 2)):
+                    time.sleep(random.uniform(2, 4))
+                    t2, _ = scrape_plz(browser, plz, a.kwh, buchstabe, idx, debug=False)
+                    if t2:
+                        gruppen[gruppe_id(t2)] = t2
+            print(f"[{plz}] {len(gruppen)} Tarifgebiet(e)" + (" (mit Adresse)" if adr else "") + ": " +
+                  ", ".join(f"{t['tarif']} {t['ap']} ct / {t['gp']} EUR" for t in tarife))
+            if gruppen:                      # bei Fehlschlag alte Daten behalten
+                data["gruppen"].update(gruppen)
+                ids = list(gruppen)
+                data["plz"][plz] = ids[0] if len(ids) == 1 else ids
                 ok += 1
                 streak = 0
             else:
